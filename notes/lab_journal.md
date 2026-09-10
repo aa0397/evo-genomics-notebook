@@ -6,4 +6,9 @@
 ### Completed Tasks
 - Installed Unix terminal tools and configured Conda.
 - Initialized `evo-genomics-notebook` GitHub repository.
-- Completed week 3 assignment
+
+## Week 3: Using R for Pop Genomics
+- **Date:** 09 Sep 2026
+
+### Completed Tasks
+- Completed week 3 tasks
