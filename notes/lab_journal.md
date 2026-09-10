@@ -6,4 +6,4 @@
 ### Completed Tasks
 - Installed Unix terminal tools and configured Conda.
 - Initialized `evo-genomics-notebook` GitHub repository.
-
+- Completed week 3 assignment
