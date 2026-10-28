@@ -1,0 +1,320 @@
+#BIOL 691 Week 8-9 Code and Notes. AA
+#### PART I. Read mapping and variant (SNP calling) (UNIX/BASH) ----
+#==============================================================================
+conda create -n bio-tools python=3.10 samtools bedtools -y
+conda install --name bio-tools seqtk
+conda install --name bio-tools bwa-mem2
+conda install --name bio-tools bcftools
+conda install --name bio-tools bcftools
+conda activate bio-tools
+
+head Scut_reference.fasta
+seqtk trimfq -b 20 -e 20 Scut_reference.fasta > Scut_reference_trimmed.fasta
+# Verify header consistency
+grep "^>" Scut_reference_trimmed.fasta | head -n 5
+
+
+bwa-mem2 index Scut_reference_trimmed.fasta
+samtools faidx Scut_reference_trimmed.fasta
+
+
+THREADS="${THREADS:-$(($(nproc) - 1))}"
+if [ "$THREADS" -lt 1 ]; then THREADS=1; fi
+echo "Running alignment with ${THREADS} threads."
+mkdir -p bams
+
+# I ran this mem step as a shell instead. Forgot to unzip the reads directory at first
+tail -n +2 samples2.txt | while read -r SAMPLE POP; do
+# Skip empty lines
+[ -z "$SAMPLE" ] && continue
+
+echo "=================================================="
+echo "Processing Sample: ${SAMPLE} (Population: ${POP})"
+echo "=================================================="
+
+R1="reads/${SAMPLE}_R1.fastq.gz"
+R2="reads/${SAMPLE}_R2.fastq.gz"
+OUT_BAM="bams/${SAMPLE}.sorted.bam"
+
+RG="@RG\tID:${SAMPLE}\tSM:${SAMPLE}\tPL:ILLUMINA\tLB:${POP}"
+
+#  alignment and sorting stream
+bwa-mem2 mem -t "${THREADS}" -R "${RG}" Scut_reference_trimmed.fasta "${R1}" "${R2}" | \
+samtools view -@ "${THREADS}" -u - | \
+samtools sort -@ "${THREADS}" -o "${OUT_BAM}" -
+  
+  # Index sorted BAM
+  samtools index -@ "${THREADS}" "${OUT_BAM}"
+
+# Calculate summary statistics
+samtools flagstat "${OUT_BAM}" > "bams/${SAMPLE}.flagstat.txt"
+
+echo "Done: ${OUT_BAM}"
+done
+
+"
+Reality check 1: What did the command above just do?
+ 
+ The above commands looped through the forward and reverse reads for each sample and ran the mem tool with the t flag within the bwa-mem2 package. 
+ This tool is apparently for genome alignment and the t flag simply sets threads. For each alignment, samtools is used to organize the (I guess they are genomes at this point?)
+ and put them in a more convenient format for downstream analyses, saving each in the bams directory. The RG variable is just the indexing of headers for each sample specified by the -R flag in the mem.
+"
+
+mkdir -p vcf
+
+ls bams/*.sorted.bam > bams/bam_list.txt
+
+bcftools mpileup \
+--threads ${THREADS} \
+-f Scut_reference_trimmed.fasta \
+-b bams/bam_list.txt \
+-a FORMAT/AD,FORMAT/DP \
+-d 8000 | \
+bcftools call \
+--threads ${THREADS} \
+-m \
+-v \
+-O z \
+-o vcf/populations_raw.vcf.gz
+
+"
+Reality check 2: what did the command above just do? What do all the flags mean (-m, -d, etc.)?
+
+The above command mpileup creates a sort of distribution of variation ('genotype likelihoods') for each bam alignment.
+Then the call tool (tool call) makes the definitive decision of what the locus should be based on each genotype likelihood. 
+The m flag switches to a muli-allelic caller instead of the default. -v seems to simplify to variants and ignores conserved regions.
+"
+
+
+tabix -p vcf vcf/populations_raw.vcf.gz
+
+bcftools view \
+-v snps \
+-m2 -M2 \
+-i 'QUAL >= 30 && INFO/DP >= 10' \
+vcf/populations_raw.vcf.gz \
+-O z -o vcf/populations_filtered_snps.vcf.gz
+
+tabix -p vcf vcf/populations_filtered_snps.vcf.gz
+
+bcftools stats vcf/populations_filtered_snps.vcf.gz > vcf/vcf_stats.txt
+cat vcf/vcf_stats.txt | grep "^SN"
+
+# View the VCF header lines (definitions and sample names)
+bcftools view -h vcf/populations_filtered_snps.vcf.gz | tail -n 5
+
+# View the first few SNP records (CHROM, POS, REF, ALT, QUAL, FORMAT, and Genotypes)
+bcftools view -H vcf/populations_filtered_snps.vcf.gz | head -n 5
+
+
+
+
+
+#### PART II. Evolutionary Genomics Downstream Analysis in R ----
+#==============================================================================
+
+rm(list=ls())
+{
+  required_packages <- c("vcfR", "adegenet", "hierfstat", "ggplot2","pheatmap", "reshape2", "gridExtra", "dplyr","pheatmap")
+  require2 <- function(packs){
+    assign('b',c())
+    for (i in seq_along(packs)) {
+      assign('b',rbind(b,paste0("require('",packs[[i]],"')")))}
+    eval(parse(text=b))}
+  require2(required_packages)
+}
+}
+
+setwd()
+
+meta <- read.table("samples2.txt", header = TRUE, stringsAsFactors = FALSE)
+colnames(meta) <- c("sample", "pop")
+
+vcf <- read.vcfR("vcf/populations_filtered_snps.vcf.gz")
+gen <- vcfR2genlight(vcf)
+
+# Align sample order and assign population factors
+meta <- meta[match(indNames(gen), meta$sample), ]
+pop(gen) <- as.factor(meta$pop)
+
+# have a look at the genind object:
+gen
+
+gen_matrix <- tab(gen, NA.method = "mean")
+pca_res <- prcomp(gen_matrix, center = TRUE, scale. = FALSE)
+
+pca_df <- as.data.frame(pca_res$x)
+pca_df$sample <- indNames(gen)
+pca_df$pop <- pop(gen)
+
+eigs <- pca_res$sdev^2
+pc1_var <- round((eigs[1] / sum(eigs)) * 100, 2)
+pc2_var <- round((eigs[2] / sum(eigs)) * 100, 2)
+
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = pop, label = sample)) +
+  geom_point(size = 4, alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(fill = pop), alpha = 0.15, show.legend = FALSE) +
+  scale_color_manual(values = c("OH-LV" = "#E69F00", "VA-BHG" = "#56B4E9", "WV-SR" = "#009E73")) +
+  scale_fill_manual(values = c("OH-LV" = "#E69F00", "VA-BHG" = "#56B4E9", "WV-SR" = "#009E73")) +
+  labs(
+    title = "Principal Component Analysis (PCA)",
+    x = paste0("PC1 (", pc1_var, "% variance)"),
+    y = paste0("PC2 (", pc2_var, "% variance)"),
+    color = "Population"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+# Define genotypes
+gen_mat <- as.matrix(gen) ###################
+hf_mat <- gen_mat
+hf_mat[gen_mat == 0] <- 11
+hf_mat[gen_mat == 1] <- 12
+hf_mat[gen_mat == 2] <- 22
+
+# Create a data frame for analysis
+
+hf_data <- data.frame(pop = pop(gen), hf_mat)
+
+overall_stats <- wc(hf_data)
+cat("Overall Weir & Cockerham Fst:", round(overall_stats$FST, 4), "\n")
+
+pairwise_fst <- pairwise.WCfst(hf_data)
+
+pheatmap(
+  pairwise_fst,
+  display_numbers = TRUE,
+  number_format = "%.3f",
+  fontsize_number = 12,
+  main = "Pairwise Weir & Cockerham Fst Heatmap",
+  color = colorRampPalette(c("#F7FCF5", "#74C476", "#00441B"))(50),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+het_stats <- basic.stats(hf_data)
+
+# 3.1 Drift: SFS & Heterozygosity
+allele_counts <- colSums(as.matrix(gen), na.rm = TRUE)
+allele_counts <- allele_counts[!is.na(allele_counts)]
+sfs_df <- data.frame(Allele_Count = factor(allele_counts))
+
+p_sfs <- ggplot(sfs_df, aes(x = Allele_Count)) +
+  geom_bar(fill = "#0072B2", color = "black", width = 0.7) +
+  labs(title = "Site Frequency Spectrum (SFS)", x = "Alternate Allele Count", y = "Number of Loci") +
+  theme_classic(base_size = 12)
+
+ho_means <- colMeans(het_stats$Ho, na.rm = TRUE)
+hs_means <- colMeans(het_stats$Hs, na.rm = TRUE)
+pop_names <- levels(pop(gen))
+
+pop_het <- data.frame(
+  pop = factor(rep(pop_names, 2), levels = pop_names),
+  Metric = factor(c(rep("Expected (Hs)", length(pop_names)), rep("Observed (Ho)", length(pop_names))),
+                  levels = c("Expected (Hs)", "Observed (Ho)")),
+  Value = c(hs_means[pop_names], ho_means[pop_names])
+)
+pop_het$Value[is.na(pop_het$Value)] <- 0
+
+p_het <- ggplot(pop_het, aes(x = pop, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), color = "black", width = 0.7) +
+  scale_fill_manual(values = c("Expected (Hs)" = "#0072B2", "Observed (Ho)" = "#D55E00")) +
+  labs(title = "Drift Signature: Ho vs. Hs", x = "Population", y = "Mean Heterozygosity") +
+  theme_minimal(base_size = 12)
+
+grid.arrange(p_sfs, p_het, ncol = 2)
+
+
+if ("Fst" %in% colnames(het_stats$perloc)) {
+  locus_fst <- het_stats$perloc$Fst
+} else {
+  locus_fst <- het_stats$perloc$FST
+}
+locus_fst[is.na(locus_fst) | locus_fst < 0] <- 0
+
+outlier_df <- data.frame(Locus = 1:length(locus_fst), FST = locus_fst)
+fst_threshold <- quantile(outlier_df$FST, 0.95, na.rm = TRUE)
+
+ggplot(outlier_df, aes(x = Locus, y = FST)) +
+  geom_point(aes(color = FST >= fst_threshold), size = 2.5) +
+  geom_hline(yintercept = fst_threshold, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("FALSE" = "grey50", "TRUE" = "#D55E00")) +
+  labs(title = "Locus-Specific Fst Outlier Scan (Selection)", x = "SNP Index", y = "Fst") +
+  theme_minimal(base_size = 14)
+
+
+# Add lat/lon data 
+pop_coords <- data.frame(pop = c("OH-LV", "VA-BHG", "WV-SR"), lat = c(41.1, 37.2, 38.8), lon = c(-81.5, -80.4, -79.8))
+geo_dist <- as.matrix(dist(pop_coords[, c("lon", "lat")]))
+rownames(geo_dist) <- colnames(geo_dist) <- pop_coords$pop
+lin_fst <- pairwise_fst / (1 - pairwise_fst)
+
+common_pops <- intersect(rownames(pairwise_fst), pop_coords$pop)
+ibd_df <- data.frame(Geo_Dist = geo_dist[common_pops, common_pops][lower.tri(geo_dist[common_pops, common_pops])],
+                     Lin_Fst  = lin_fst[common_pops, common_pops][lower.tri(lin_fst[common_pops, common_pops])])
+
+ggplot(ibd_df, aes(x = Geo_Dist, y = Lin_Fst)) +
+  geom_point(size = 4, color = "#7570B3") +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(title = "Isolation by Distance", x = "Geographic Distance", y = "Linearized Fst") +
+  theme_classic(base_size = 14)
+
+Ho_mat <- het_stats$Ho
+Hs_mat <- het_stats$Hs
+Fis_mat <- 1 - (Ho_mat / Hs_mat)
+
+fis_list <- list()
+for (p in pop_names) {
+  p_fis <- Fis_mat[, p]
+  p_fis <- p_fis[is.finite(p_fis)]
+  if (length(p_fis) == 0) p_fis <- 0
+  fis_list[[p]] <- data.frame(Population = p, FIS = p_fis)
+}
+fis_df <- do.call(rbind, fis_list)
+
+ggplot(fis_df, aes(x = Population, y = FIS, fill = Population)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_fill_manual(values = c("OH-LV" = "#E69F00", "VA-BHG" = "#56B4E9", "WV-SR" = "#009E73")) +
+  labs(title = "Non-Random Mating: Fis Distribution", x = "Population", y = "Fis") +
+  theme_minimal(base_size = 14)
+
+"
+A. What is a bam file, and what is a vcf file (what information do they contain)? Can you view a bam file from the command line? What about a vcf file?
+#
+A bam/sam file contains the (genome,metagenome,whatever) sequences by their bases. This is a standardized format. Having the bams compressed probably helps computation/storage/transfer etc. 
+
+B. Compare your PCA clustering with the pairwise Fst heatmap. Which population pairs show the highest degree of genetic differentiation? Does PC1 separate populations geographically or by specific regional lineages?
+#
+OH pop. separating strongly against WV/VA on the dominant 'x' axis. OH dissimilar to WV/VA than to eachother.
+We see that the the VA and WV populations are inbreeding to an extreme and the OH populations are inbreeding more with the WV than the VA population. 
+Wouldn't this imply that the WV and VA populations are not subpopulations?
+
+C. In the Fst outlier scan, what does a SNP with an exceptionally high Fst value (e.g., FST>0.6) suggest about that specific locus compared to genome-wide average Fst? How would you rule out genetic drift as the primary cause of high Fst at that single locus?
+#
+I think it shows that the locus with the high Fst is experiencing strong evolutionary forces. It could be an adaptive mutation or something like the founder effect. 
+Genetic drift can be reuled out as causing the high Fst for the locus because we see higher than expected heterozygosity in both WV/VA populations. 
+
+D. Which population shows evidence of non-random mating or selection favoring heterozygous genotypes? Why do VA-BHG and WV-SR show no variance in Fis across loci?
+#
+For the latter question, I think this is similarly reflected in question A with the Fst. We see no variance in the inbreeding coefficient between the WV and VA subpopulations
+because they are effectively the same population. I think the assumption is that they are inbreeding a whole bunch, but I am not sure what plants we are looking at. Maybe they are clonal. 
+For the first quesiton, an evolutionary force (assortative mating or selection) appears to be favoring heterozygosity in the WV/VA populations given its higher Fst and higher than expected heterozygosity.
+This is also reflected in the OH population with an Fis of 1. 
+"
+
+grp <- find.clusters(gen_matrix, max.n=6,n.pca = 10, choose = FALSE, stat = "BIC")
+
+dapc_object <- adegenet::dapc(gen_matrix,grp$grp) 
+# getting an error:
+#Error in lda.default(x, grouping, ...) : 
+#variable 1 appears to be constant within groups
+#could be because of the low variability between groups.
+
+
+
+
+
+
+
