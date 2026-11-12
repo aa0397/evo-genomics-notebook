@@ -1,0 +1,266 @@
+#https://github.com/barrettlab/Biol_693A_Evol_Genomic_Analysis_F2026/wiki/Week-11%E2%80%9012:-Phylogenomics,-concatenation,-and-coalescent-analysis
+# Ayers
+#### Week 11‐12: Phylogenomics, concatenation, and coalescent analysis
+
+conda activate bio-tools
+conda install -c conda-forge iqtree aster seqkit iqtree amas
+
+wastral -h
+iqtree3 -h
+
+
+# Run IQ-TREE on each alignment using GTR+G+I model and 10 threads, and 1000 ultrafast bootstrap replicates
+for fasta in *_paralogs_no_chimeras_mafft_seqkit_trim.fasta; do
+iqtree -s "$fasta" -m GTR+G+I -T 7 -B 1000 --prefix "${fasta%.fasta}"
+done
+
+cat *_paralogs_no_chimeras_mafft_seqkit_trim.contree > subset_5_genes.treefile
+
+
+
+astral4 -i subset_5_genes.treefile -t 10 -o subset_5_wastral.tre
+# verbose
+astral4 -i subset_5_genes.treefile -t 10 -u 2 -o subset_5_wastral_verbose.tre
+#Score: 590955
+seqkit concat *_paralogs_no_chimeras_mafft_seqkit_trim.fasta > concatenated_supermatrix.fasta
+
+
+iqtree -s concatenated_supermatrix.fasta -m GTR+G+I -T 7 -B 1000 --prefix concatenated_analysis
+
+iqtree3 -S trimmed_aligned_bestparalog --prefix iqtree_bestparalog -m GTR+G+I -B 1000 -T 7
+
+
+
+astral4 -i iqtree_bestparalog.treefile -t 10 -o iqtree_bestparalog_wastral.tre
+# verbose
+astral4 -i iqtree_bestparalog.treefile -t 10 -u 2 -o iqtree_bestparalog_wastral_verbose.tre
+#Score: 12598546
+AMAS.py concat -i trimmed_aligned_bestparalog/*.fasta -f fasta -d dna -u fasta -t concatenated_supermatrix.fasta
+# replaced -o with -t flag. Apparently there is no -o flag?
+iqtree3 -s concatenated_supermatrix.fasta -m GTR+G+I -B 1000 -T 7 --prefix concatenated_supermatrix
+
+
+# 1. Clean the 5-gene and 272-gene ASTRAL species trees (basic & verbose)
+sed 's/fastp-//g' subset_5_wastral.tre > tree_5gene_astral.tre
+sed 's/fastp-//g' subset_5_wastral_verbose.tre > tree_5gene_astral_verbose.tre
+
+sed 's/fastp-//g' iqtree_bestparalog_wastral.tre > tree_272gene_astral.tre
+sed 's/fastp-//g' iqtree_bestparalog_wastral_verbose.tre > tree_272gene_astral_verbose.tre
+
+# 2. Clean the 5-gene and 272-gene Supermatrix maximum likelihood trees
+sed 's/fastp-//g' concatenated_analysis.treefile > tree_5gene_supermatrix.tre
+sed 's/fastp-//g' concatenated_supermatrix.treefile > tree_272gene_supermatrix.tre
+
+###Switching to R
+
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### 
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### 
+
+library(tidyverse)
+library(ape)
+library(ggtree)
+library(treeio)
+require(pak)
+
+outgroup_taxon <- "Brassavola-glauca_S40"
+
+plot_rooted_tree <- function(tree_file, title_text) {
+  # 1. Read tree using ape
+  tr <- read.tree(tree_file)
+  
+  # 2. Root tree on outgroup
+  if (outgroup_taxon %in% tr$tip.label) {
+    tr <- root(tr, outgroup = outgroup_taxon, resolve.root = TRUE)
+  }
+  
+  # 3. Align node.label vector length to prevent tree mismatch warnings
+  num_nodes <- tr$Nnode
+  if (!is.null(tr$node.label)) {
+    if (length(tr$node.label) < num_nodes) {
+      tr$node.label <- c(tr$node.label, rep("", num_nodes - length(tr$node.label)))
+    } else if (length(tr$node.label) > num_nodes) {
+      tr$node.label <- tr$node.label[1:num_nodes]
+    }
+  }
+  
+  # 4. Base tree plot - suppress fortify() deprecation warnings
+  p <- suppressWarnings(
+    ggtree(tr) +
+      geom_tiplab(size = 3, fontface = "italic") +
+      theme_tree2() +
+      labs(title = title_text)
+  )
+  
+  # 5. Extract and print internal node support labels
+  p <- p + 
+    geom_text2(
+      aes(subset = !isTip & !is.na(label) & label != "", label = label),
+      hjust = 1.2, 
+      vjust = -0.4, 
+      size = 2.8, 
+      color = "darkblue"
+    )
+  
+  # 6. Dynamically set x-axis buffer for long taxon tip labels
+  p <- p + xlim(0, max(p$data$x, na.rm = TRUE) * 1.35)
+  
+  return(p)
+}
+
+# Run plotting pipeline cleanly
+p1 <- plot_rooted_tree("tree_5gene_astral.tre", "5-Gene w-ASTRAL Species Tree")
+p2 <- plot_rooted_tree("tree_5gene_supermatrix.tre", "5-Gene Concatenated Supermatrix (ML)")
+p3 <- plot_rooted_tree("tree_272gene_astral.tre", "272-Gene w-ASTRAL Species Tree")
+p4 <- plot_rooted_tree("tree_272gene_supermatrix.tre", "272-Gene Concatenated Supermatrix (ML)")
+
+# Display trees
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+
+####
+
+plot_astral_quartets <- function(tree_file, title_text, outgroup = "Brassavola-glauca_S40") {
+  
+  # 1. Read raw text string
+  raw_str <- paste(readLines(tree_file, warn = FALSE), collapse = "")
+  
+  # 2. Extract q1, q2, q3 values directly from the ASTRAL comments
+  astral_comments <- str_extract_all(raw_str, "'\\[.*?\\]'")[[1]]
+  
+  q_table <- tibble(comment = astral_comments) %>%
+    mutate(
+      q1_raw = as.numeric(str_extract(comment, "(?<=q1=)[0-9\\.e-]+")),
+      q2_raw = as.numeric(str_extract(comment, "(?<=q2=)[0-9\\.e-]+")),
+      q3_raw = as.numeric(str_extract(comment, "(?<=q3=)[0-9\\.e-]+"))
+    ) %>%
+    tidytree::mutate(
+      q1 = pmax(0, q1_raw),
+      q2 = pmax(0, q2_raw),
+      q3 = pmax(0, q3_raw)
+    )
+  
+  # 3. Clean Newick string and read tree
+  clean_newick <- gsub("'\\[.*?\\]'", "", raw_str)
+  tr <- read.tree(text = clean_newick)
+  
+  # 4. Root tree on outgroup
+  if (outgroup %in% tr$tip.label) {
+    tr <- root(tr, outgroup = outgroup, resolve.root = TRUE)
+  }
+  
+  # 5. Build base ggtree plot
+  p <- suppressWarnings(
+    ggtree(tr) + 
+      geom_tiplab(size = 3, fontface = "italic") +
+      theme_tree2() +
+      labs(title = title_text, subtitle = "Pie charts: q1 (Main), q2 (Alt 1), q3 (Alt 2)")
+  )
+  
+  # 6. Align internal plot nodes with parsed quartet data table
+  internal_nodes <- p$data %>% filter(!isTip)
+  
+  # Rooting creates an unannotated root node at the bottom of the tree.
+  # Prepend an NA row to q_table so the 43 ASTRAL annotations align perfectly with internal nodes 2:44
+  if (nrow(q_table) < nrow(internal_nodes)) {
+    pad_diff <- nrow(internal_nodes) - nrow(q_table)
+    pad_rows <- tibble(comment = rep(NA, pad_diff), 
+                       q1_raw = NA, q2_raw = NA, q3_raw = NA, 
+                       q1 = NA, q2 = NA, q3 = NA)
+    q_padded <- bind_rows(pad_rows, q_table)
+    quartet_df <- bind_cols(internal_nodes, q_padded)
+  } else {
+    quartet_df <- bind_cols(internal_nodes, q_table[1:nrow(internal_nodes), ])
+  }
+  
+  # Filter out NAs for pie chart generation
+  quartet_df_clean <- quartet_df %>% filter(!is.na(q1) & !is.na(q2) & !is.na(q3))
+  
+  # 7. Convert quartet values into a list of pie charts for ggtree
+  pie_colors <- c("q1" = "#2b5c8f", "q2" = "#d95f02", "q3" = "#7570b3")
+  pies <- nodepie(quartet_df_clean, cols = c("q1", "q2", "q3"), 
+                  color = pie_colors, alpha = 0.9)
+  
+  # 8. Overlay pies directly onto tree nodes
+  p_final <- inset(p, pies, width = 0.03, height = 0.03)
+  
+  # 9. Construct a clean legend using dummy points
+  legend_data <- tibble(
+    x = max(p$data$x, na.rm = TRUE),
+    y = max(p$data$y, na.rm = TRUE),
+    Quartet = factor(c("q1 (Main Topology)", "q2 (Alternative 1)", "q3 (Alternative 2)"),
+                     levels = c("q1 (Main Topology)", "q2 (Alternative 1)", "q3 (Alternative 2)"))
+  )
+  
+  p_final <- p_final + 
+    geom_point(data = legend_data, aes(x = x, y = y, color = Quartet), alpha = 0, size = 0) +
+    scale_color_manual(
+      values = c("q1 (Main Topology)" = "#2b5c8f", 
+                 "q2 (Alternative 1)" = "#d95f02", 
+                 "q3 (Alternative 2)" = "#7570b3"),
+      name = "Quartet Frequencies"
+    ) +
+    guides(color = guide_legend(override.aes = list(alpha = 1, size = 4))) +
+    theme(
+      legend.position = c(0.85, 0.25),
+      legend.background = element_rect(fill = "white", color = "gray80"),
+      legend.title = element_text(face = "bold", size = 10),
+      legend.text = element_text(size = 9)
+    ) +
+    xlim(0, max(p$data$x, na.rm = TRUE) * 1.45)
+  
+  return(p_final)
+}
+
+# Run plotting pipeline on both trees
+pie_plot_5 <- plot_astral_quartets("tree_5gene_astral_verbose.tre", "5-Gene ASTRAL Quartet Support")
+pie_plot_272 <- plot_astral_quartets("tree_272gene_astral_verbose.tre", "272-Gene ASTRAL Quartet Support")
+
+# Display final 272-gene plot
+print(pie_plot_272)
+
+#### Interpretation Questions ----
+"
+1. 
+Compare the 5-gene and 272-gene ASTRAL species trees. 
+How do the node support values and quartet pie charts (Q1-3) change as the number of loci increases? 
+Why are 5 loci insufficient for summary coalescent methods?
+
+The 5-gene ASTRAL tree branches are primarily domianted by the main quartet topology, while the 272-gene ASTRAL tree has much more support at almost every branch for the q2 alternative quartet 
+topology and even for the q3 topology. Even the very first group where the Brassavola genus branches off has almost a third of each quartet topology in the 272-gene 
+ASTRAL tree comapred to the 5-gene astral tree. So, we generally see a confident tree with dominance of the main quartet topology become less confident by adding more loci. 
+We generally see that the q2 and q3 topologies are have similar frequencies in the 272-gene tree, suggesting that there is not 'introgression' overall, but that there is also
+not high confidence for most species except genera Calypso. 
+The support values generally increase in the 272-gene astral tree and are less smoothed. Especially at the early nodes.
+5-loci are insufficient for these summary coalescent methods because these taxa have a noisy unresolved taxonomy with varibility in loci and probably also linkage.
+More generally, 5-loci are insufficient because it implies that there will smoothing of the taxonomy, creating estimation errors which over-support species assigments.
+The 272-gene tree allows the tree to have higher resolution and be more predictive.
+
+2. 
+Examine a node in the 272-gene ASTRAL tree that exhibits significant discordance (where Q1 < 60%). Look at the relative proportions of Q2 and Q3. 
+Are Q2 and Q3 approximately equal, or is one significantly larger than the other?
+What biological process does this pattern suggest?
+
+The node where Cremastra saprophytica and Cremastra aphylla diverge has less that 60% Q1 and about even proportions of Q2(~40%) and Q1 (~20%).
+I think this represents the classic/neutral gene flow, with maybe slight introgression/systematic error given that Q2 appears to be greater than Q3.
+
+3.
+Identify any nodes where the 272-gene Maximum Likelihood supermatrix tree (IQ-TREE) conflicts with the 272-gene ASTRAL species tree. 
+Does the supermatrix tree show 100% Ultrafast Bootstrap support for a node that exhibits high quartet discordance in ASTRAL? 
+Explain why supermatrix analyses can yield high support for incorrect topologies in the presence of ILS.
+
+Across the supermatrix and astral tree, we see that the node with Corralorhyza bulbosa has 34% support on the astral tree but 100% support on the supermatrix.
+Focusing on Cremastra saprophytica and Cremastra aphylla again, we see 100% confidence on the ASTRAL tree and concatenated supermatrix, while the quartet topologies
+for this node is more variable.
+Supermatrix analyses may yield incorrect topologies if there is Incomplete Lineage Sorting (ILS) because it combines loci, if I understand it correctly, and smoothes out
+their differences for incomplete data, which results in underestimating the variability in loci. 
+
+4.
+Can you identify a genus in the trees that appears to be paraphyletic? Which is it, and how is it discussed in the Bot J Linn Soc paper?
+
+The Oreorchis genus appears paraphyletic to Corallorhiza. The paper discusses how discerning if Oreorchis and Corallorhiza are sister taxa or paraphyletic has \
+been a challenge because of differing results between ITS 
+ribosomal sequencing. Character traits such as leaflessness have also challenged taxonomy because of the convergence of traits such as leaflessness on different genera.
+Geographic barriers, variable selection pressures, and speciaition may have created the wide diversity of the taxanomic tree with varying convergent traits and genetic similarities, while evidence of hybridization is mixed. 
+"
