@@ -1,0 +1,33 @@
+#BIOL 691 Week 13-14 Code and Notes. AA
+#https://github.com/barrettlab/Biol_693A_Evol_Genomic_Analysis_F2026/wiki/Week-13%E2%80%9014:-Ancestral-character-state-reconstruction
+
+#==============================================================================
+#### #Discussion Questions ----
+#==============================================================================
+"
+
+1. For the four floral traits (ltype, lobe, callus, mentum), does ER or ARD receive higher AIC weight? What does that tell you about whether floral structures are gained and lost at similar rates?
+  
+  For labellum type, labellum lobes, and callus, equal rates had the highest AIC weight.
+  For mentum, all rates different had the highest AIC weight. 
+  This tells us than generall these floral structure are gained at lost at similar rates. Mentum may be under some sort of pollinator or sexual selection or selection from heat or humidity or something dependent on orchid habitat 
+  
+2. Looking at the stochastic character map for troph, how many independent times did full mycoheterotrophy (HM, state 2) evolve from partial mycoheterotrophy (PM, state 1) in Corallorhiza?
+
+  Mycoheterotrophy evolved only twice in Corallorhiza from the partial state. There is a small chance it evolved directly from the non-mycoheterotroph state.
+  
+3. What was the most likely trophic mode for the ancestor or Corallorhiza? What about the Corallorhiza striata and C. maculata species complexes?
+
+  The most likely trophic mode for the ancestor of Corallorhiza was non-mycoheterotrophic. It would have gotten all of its nutrients from photosynthesis and the soil.
+  
+4. Can you think of a way that using this kind of ancestral reconstruction method might help you understand you own study system a bit better? How so?
+
+  Ancestral reconstruction modeling that includes markov processes and posterior probabilities to better include evoluntionary time and also more constrained evolutionary pathways
+  could help inform my research on tree-mycorrhizal associations to show how certain trees or certain fungi may have similar or different nutrient preferences. 
+  I think that the way that we could use this is by understanding tree association strength with certain mycorrhizal fungi and how that might influence their nutrient preference.  
+  Ancestral state reconstruction for mycorrhizal association (ECM, AM, non-mycorrhizal, or some combination of the three) has been very important for understanding why these symbioses have arrisen
+  and what environments may favor which mycorrhizal associations. 
+  While extending this type of reconstruction beyond trees to fungi and even bacteria could be challenging, these may also rewarding to understand how things like
+  enzymatic capabilities have evolved. 
+  
+"
